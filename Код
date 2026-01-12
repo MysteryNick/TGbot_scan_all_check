@@ -1,0 +1,108 @@
+import asyncio
+import logging
+import sys
+from io import BytesIO
+
+from aiogram import Bot, Dispatcher, F, types
+from aiogram.filters import CommandStart
+from PIL import Image
+import pytesseract
+
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+
+# ================= НАСТРОЙКИ =================
+
+# Вставьте сюда токен вашего бота, полученный от @BotFather
+BOT_TOKEN = ''
+
+# Если вы на Windows и tesseract не в PATH, раскомментируйте и укажите путь к exe:
+# pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+
+# =============================================
+
+# Включаем логирование, чтобы видеть ошибки в консоли
+logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+
+# Инициализация диспетчера
+dp = Dispatcher()
+
+
+def recognize_text_sync(image_data: BytesIO) -> str:
+    """
+    Синхронная функция для обработки изображения.
+    Запускается в отдельном потоке, чтобы не блокировать бота.
+    """
+    try:
+        # Открываем изображение из байтов
+        image = Image.open(image_data)
+        
+        # Запускаем распознавание
+        # lang='rus+eng' позволяет распознавать и русский, и английский текст
+        text = pytesseract.image_to_string(image, lang='rus+eng')
+        return text.strip()
+    except Exception as e:
+        logging.error(f"Ошибка при распознавании: {e}")
+        return None
+
+
+@dp.message(CommandStart())
+async def cmd_start(message: types.Message):
+    await message.answer(
+        "Привет! Я бот-OCR.\n"
+        "Отправь мне фотографию с русским текстом, и я попробую его прочитать."
+    )
+
+
+@dp.message(F.photo)
+async def handle_photo(message: types.Message, bot: Bot):
+    """
+    Хендлер, который срабатывает, когда пользователь присылает фото.
+    """
+    status_msg = await message.reply("Скачиваю и обрабатываю фото...")
+
+    try:
+        # Получаем объект самого большого размера фото
+        photo = message.photo[-1]
+
+        # Создаем буфер в памяти для сохранения фото
+        image_io = BytesIO()
+        
+        # Скачиваем фото прямо в память (без сохранения на диск)
+        await bot.download(photo, destination=image_io)
+        
+        # Обработка изображения — тяжелая операция, выносим в отдельный поток
+        text = await asyncio.to_thread(recognize_text_sync, image_io)
+
+        if text:
+            # Если текст слишком длинный для одного сообщения Telegram (4096 символов),
+            # обрезаем его (или можно разбить на части)
+            if len(text) > 4000:
+                text = text[:4000] + "\n...(текст обрезан)"
+                
+            await message.reply(f" **Распознанный текст:**\n\n{text}", parse_mode="Markdown")
+        else:
+            await message.reply("Не удалось найти текст на изображении или он пуст.")
+
+    except Exception as e:
+        logging.error(f"Ошибка в хендлере: {e}")
+        await message.reply("Произошла ошибка при обработке изображения.")
+    
+    finally:
+        # Удаляем сообщение "Обрабатываю...", чтобы не засорять чат
+        try:
+            await status_msg.delete()
+        except:
+            pass
+
+
+async def main():
+    bot = Bot(token=BOT_TOKEN)
+    print("Бот запущен!")
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Бот остановлен")
